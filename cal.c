@@ -183,9 +183,12 @@ void file_find(GHashTable *g2_unique_chunks, struct file_info *mr, int64_t mr_co
 	
 		if (j != fp_info_start + chunk_num)
 			continue;
+		if ((1.0)*non_same_chunk_count/chunk_num > 1 - migration_threshold)
+			continue;
 
 		if (0 == non_same_chunk_count) {
 			//put the files in the common file
+			ff[*ff_count].filesize = fi->size;
 			ff[*ff_count].fid = fi->fid;
 			ff[*ff_count].num = chunk_num;
 			ff[*ff_count].fps = (fingerprint *)malloc(chunk_num * sizeof(fingerprint));
@@ -200,6 +203,7 @@ void file_find(GHashTable *g2_unique_chunks, struct file_info *mr, int64_t mr_co
 			}
 			(*ff_count)++;
 		} else {
+			m[*m_count].filesize = fi->size;
 			m[*m_count].fid = fi->fid;
 			m[*m_count].total_num = fi->chunknum;
 			m[*m_count].fps = (fingerprint *)malloc(fi->chunknum * sizeof(fingerprint));
@@ -213,16 +217,17 @@ void file_find(GHashTable *g2_unique_chunks, struct file_info *mr, int64_t mr_co
 			int64_t s;
 			for (s = 0; s < chunk_num; s++)
 			{
-				if (0 == chunk_state[s]) 
-					continue;
 				//fps are sorted by order
 				memcpy((m[*m_count].fps)[s], sc[s + fp_info_start].fp, sizeof(fingerprint));
 
 				(m[*m_count].arr)[s] = sc[s + fp_info_start].size;
 				//in ==1, mean it in the scommon
-				(m[*m_count].arr)[s + fi->chunknum] = 1;
+				if (0 == chunk_state[s]) 
+					(m[*m_count].arr)[s + fi->chunknum] = 1;
+				else 
+					(m[*m_count].arr)[s + fi->chunknum] = 0;
 				//cid
-				(m[*m_count].fp_cids)[s] = sc[s].cid;
+				(m[*m_count].fp_cids)[s] = sc[s + fp_info_start].cid;
 			}
 			(*m_count)++;
 		}

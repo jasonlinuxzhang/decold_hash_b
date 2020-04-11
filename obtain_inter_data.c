@@ -12,7 +12,7 @@ int enable_migration = 1;
 int enable_refs = 0;
 int enable_topk = 0;
 long int big_file = 0;
-float migration_threshold = 0.5;
+float migration_threshold = 0.7;
 
 char g1_temp_path[128] = {0};
 char g2_temp_path[128] = {0};
@@ -94,6 +94,8 @@ void push_identified_files(struct identified_file_info *identified_files, uint64
 	sync_queue_term(queue);
 }
 
+
+
 void update_remained_files(int group, struct file_info *files, uint64_t file_count, struct fp_info *s1_ord, uint64_t s1_count, struct identified_file_info *identified_files, uint64_t identified_file_count, struct migrated_file_info *migrated_files, uint64_t migrated_file_count)
 {
 	uint64_t remained_file_count = 0;
@@ -101,65 +103,64 @@ void update_remained_files(int group, struct file_info *files, uint64_t file_cou
 	qsort(s1_ord, s1_count, sizeof(struct fp_info), comp_fp_by_fid);
 	int left = 0, right = 0;
 	int i = 0;
+
+	GHashTable *rewrite_files = g_hash_table_new_full(g_int64_hash, g_fid_equal, NULL, free_fid);
+	
+	double time_1 = 0;
+    TIMER_DECLARE(1);
+    TIMER_BEGIN(1);
+	
+	for (i = 0; i < identified_file_count; i++) {
+		uint64_t *one_fid = malloc(sizeof(uint64_t));
+		*one_fid = identified_files[i].fid;
+		g_hash_table_insert(rewrite_files, &identified_files[i].fid, one_fid);
+	}
+
+	for (i = 0; i < migrated_file_count; i++) {
+		uint64_t *one_fid = malloc(sizeof(uint64_t));
+		*one_fid = migrated_files[i].fid;
+		g_hash_table_insert(rewrite_files, &migrated_files[i].fid, one_fid);
+	}
+
+	TIMER_END(1, time_1);
+	printf("construct rewrite(identified/migriated files cost:%lf(s)\n", time_1);
+
+	uint64_t start = 0;
+	uint64_t total_fps = 0;
+	double time_2 = 0;
+	TIMER_DECLARE(2);
+	TIMER_BEGIN(2);
 	for(i = 0; i < file_count; i++) {
 	    uint64_t fid = files[i].fid; 
-	    left = 0;
-	    right = identified_file_count - 1;
-	    
-	    while(left <= right) {
-		int middle = (left + right)/2;
-		if (identified_files[middle].fid == fid) 
-		    break;
-		else if (identified_files[middle].fid < fid)
-		    left = middle + 1;
-		else if (identified_files[middle].fid > fid)
-		    right = middle - 1; 
-	    }
-
-	    // the file don't need to remain
-	    if (left <= right) {
-		continue;
-	    }
-
-	    left = 0;
-	    right = migrated_file_count - 1;
-	    
-	    while(left <= right) {
-		int middle = (left + right)/2;
-		if (migrated_files[middle].fid == fid) 
-		    break;
-		else if (migrated_files[middle].fid < fid) {
-		    left = middle + 1;
-		} else if (migrated_files[middle].fid > fid) {
-		   right = middle - 1; 
-		}
-	    }
-
-	    // the file don't need to remain
-	    if (left <= right) {
-		continue;
-	    }
+		total_fps += files[i].chunknum;
+		if (NULL != g_hash_table_lookup(rewrite_files, &fid)) 
+			continue;
 	
 	    struct remained_file_info *one_file = (struct remained_file_info *)malloc(sizeof(struct remained_file_info));
+		one_file->filesize = files[i].size;
 	    one_file->fid = fid;
 	    one_file->chunknum = files[i].chunknum;
 	    one_file->fps = (fingerprint *)malloc(sizeof(fingerprint) * one_file->chunknum);
 	    one_file->fps_cid = (uint64_t *)malloc(sizeof(uint64_t) * one_file->chunknum);
 
-	    int start = find_first_fp_by_fid(s1_ord, s1_count, one_file->fid, low, high);	
+		start = total_fps - files[i].chunknum;
 	    uint32_t i = 0;
 	    for (i = 0; i < one_file->chunknum; i++) {
-		memcpy(one_file->fps[i], s1_ord[start + i].fp,  sizeof(fingerprint));	
-		one_file->fps_cid[i] = s1_ord[start + i].cid;
+			memcpy(one_file->fps[i], s1_ord[start + i].fp,  sizeof(fingerprint));	
+			one_file->fps_cid[i] = s1_ord[start + i].cid;
 	    } 
 
 	    remained_file_count++;
 	    sync_queue_push(remained_files_queue, one_file);
 	     
 	}
+	TIMER_END(2, time_2);
+	printf("find remained files cost:%lf(s)\n", time_2);
 
 	printf("remained %lu files\n", remained_file_count);
 	sync_queue_term(remained_files_queue);
+
+	g_hash_table_destroy(rewrite_files);
 }
 
 void intersection(const char *path1, const char *path2)
@@ -235,19 +236,8 @@ void intersection(const char *path1, const char *path2)
 	}
 	printf("g2 have %lu unique chunks\n", g_hash_table_size(g2_unique_chunks));
 	TIMER_END(1, time_1);
+	printf("construct hash table cost:%lf(s)\n", time_1);
 	
-
-	struct fp_info *scommon1;
-	int64_t sc1_count = 0;
-	double time_3;
-	TIMER_DECLARE(3);
-	TIMER_BEGIN(3);
-	//cal_inter(g1_unique_chunks, g2_unique_chunks, s1, s1_count, &scommon1, &sc1_count);
-	TIMER_END(3, time_3);
-	printf("cal_inter cost:%lf(s)\n", time_3);
-
-	printf("g1 have %ld chunks in g2\n", sc1_count);
-
 
 	struct identified_file_info *identified_file1;
 	int64_t identified_file1_count = 0;
@@ -262,20 +252,10 @@ void intersection(const char *path1, const char *path2)
 	TIMER_BEGIN(2);
 	file_find(g2_unique_chunks, file1, file1_count, s1, s1_count, &identified_file1, &identified_file1_count, &m1, &m1_count, mig1_count);
 	TIMER_END(2, time_2);
+	printf("find identified/migriated files cost:%lf(s)\n", time_2);
 
-	for (i = 0; i < m1_count; i++) {
-		struct fp_info *start = s1 + m1[i].fp_info_start;
-		for (j = 0; j < m1[i].total_num; j++) {
-			if (m1[i].arr[m1[i].total_num + j] != 1) {
-				memcpy(&m1[i].fps[j], &start->fp, sizeof(fingerprint));
-				m1[i].fp_cids[j] = start->cid;
-				m1[i].arr[j] = start->size;
-			}
-			start++;
-		}
-	}
 
-	printf("%s total file count:%ld fingerprint count:%ld identified file count:%ld similar file count:%ld\n", g1_path, file1_count, sc1_count, identified_file1_count, m1_count);
+	printf("%s total file count:%ld fingerprint count:%ld identified file count:%ld similar file count:%ld\n", g1_path, file1_count, s1_count, identified_file1_count, m1_count);
 	
 	push_identified_files(identified_file1, identified_file1_count, write_identified_file_temp_queue);
 
@@ -291,28 +271,31 @@ void intersection(const char *path1, const char *path2)
 
 		update_remained_files(0, file1, file1_count, s1, s1_count, identified_file1, identified_file1_count, m1, m1_count);
 	} else {
-		printf("remained files don't need to be uodated\n");
+		printf("remained files don't need to be updated\n");
 		sync_queue_term(remained_files_queue);
 	}
 
 	pthread_join(tid1, NULL);
 	pthread_join(tid3, NULL);
 
-	printf("construct hash table cost:%lf(s)\n", time_1);
-	printf("find identified/migriated files cost:%lf(s)\n", time_2);
 
 	free(file1);
 
 	free(s1);
+	/*
 	for (i = 0; i < identified_file1_count; i++) {
 	    free(identified_file1[i].sizes);
 	    free(identified_file1[i].fps);
 	}
+	*/
 	free(identified_file1);
+	/*
 	for (i = 0; i < m1_count; i++) {
 	    free(m1[i].arr);
 	    free(m1[i].fps);
+		free(m1[i].fp_cids;
 	}
+	*/
 	free(m1);
 }
 
@@ -327,25 +310,28 @@ void *write_migrated_file_temp_thread(void *arg) {
 	if (NULL ==  pool_fp) {
 		printf("fopen %s failed\n", pool_path);
 	}
+	double time_1 = 0;
+	TIMER_DECLARE(1);
+
+	uint64_t migrated_file_size = 0, migrated_file_migrated_size = 0;
     
-    	uint64_t migrated_file_count = 0;
-    	struct migrated_file_info *file;
-    	FILE *filep = NULL;
-    	while ((file = sync_queue_pop(write_migrated_file_temp_queue))) {
+    uint64_t migrated_file_count = 0;
+    struct migrated_file_info *file;
+    FILE *filep = NULL;
+    while ((file = sync_queue_pop(write_migrated_file_temp_queue))) {
 		if (NULL == filep) {
-	        	filep = fopen(temp_migrated_file_path, "w+");
-	        	if (NULL == filep) {
-		        	printf("fopen %s failed\n", temp_migrated_file_path);
-		        	break;
-	        	}
-	        	fwrite(&migrated_file_count, sizeof(uint64_t), 1, filep);
-	    	}
-	    	//printf("write migrated_file file:%lu , chunk:%lu to temp file\n", file->fid, file->total_num);
-	    	fwrite(file, sizeof(struct identified_file_info), 1, filep); 
-	    	uint64_t i = 0;
-		// fps
-	    	for (i = 0; i < file->total_num; i++)
-	        	fwrite(&file->fps[i], sizeof(fingerprint), 1, filep); 
+			TIMER_BEGIN(1);
+	        filep = fopen(temp_migrated_file_path, "w+");
+	       	if (NULL == filep) {
+		       	printf("fopen %s failed\n", temp_migrated_file_path);
+		       	break;
+	       	}
+	       	fwrite(&migrated_file_count, sizeof(uint64_t), 1, filep);
+	    }
+	    fwrite(file, sizeof(struct identified_file_info), 1, filep); 
+	   	uint64_t i = 0;
+	    for (i = 0; i < file->total_num; i++)
+	       	fwrite(&file->fps[i], sizeof(fingerprint), 1, filep); 
 
 		// arr for state
 		for (i = 0; i < file->total_num; i++)
@@ -353,23 +339,33 @@ void *write_migrated_file_temp_thread(void *arg) {
 		for (i = 0; i < file->total_num; i++)
 			fwrite(&file->arr[file->total_num + i], sizeof(uint64_t), 1, filep);		
 
+		migrated_file_size += file->filesize;
 		// write chunk data
 		char *data = NULL;
 		int32_t chunk_size;
 		for (i = 0; i < file->total_num; i++) {
 			if (file->arr[i + file->total_num] != 1) {
-				//printf("try to retrieve from container:%lu\n", file->fp_cids[i]);
 				chunk_size = retrieve_from_container(pool_fp, file->fp_cids[i], &data, file->fps[i]);
 				if (chunk_size != file->arr[i]) {
-					printf ("chunk size:%d != %d\n", chunk_size, file->arr[i]);
+					printf ("file:%lu read chunk from container:%lu failed, chunk size:%d != %d\n", file->fid, file->fp_cids[i], chunk_size, file->arr[i]);
 					assert("retrieve migrated files chunk from containerpool failed\n");
 				}	
+				migrated_file_migrated_size += file->arr[i];
 				fwrite(data, chunk_size, 1, filep);
+				free(data);
 			}
 		}
+		free(file->fps);
+		free(file->arr);
+		free(file->fp_cids);
 
-	    	migrated_file_count++;
+	    migrated_file_count++;
 	}
+	TIMER_END(1, time_1);
+
+	printf("migrated files size:%lu, missing size:%lu\n", migrated_file_size, migrated_file_migrated_size);
+	printf("write migrated files to temp migrated temp files cost:%lf(s)\n", time_1);
+			
 
 	if (NULL != filep) {
 		fseek(filep, 0,SEEK_SET);
@@ -387,38 +383,57 @@ void * write_identified_file_to_temp_thread(void *arg)
     char temp_identified_file_path[128];
     sprintf(temp_identified_file_path, "%s/identified_file", g1_temp_path);
 
+	double time_1 = 0;
+	TIMER_DECLARE(1);
+
+	uint64_t identified_file_size = 0;
     
     uint64_t identified_file_count = 0;
     struct identified_file_info *file;
     FILE *filep = NULL;
+	uint64_t count = 0;
     while ((file = sync_queue_pop(write_identified_file_temp_queue))) {
-	if (NULL == filep) {
-	    filep = fopen(temp_identified_file_path, "w+");
-	    if (NULL == filep) {
-		printf("fopen %s failed\n", temp_identified_file_path);
-		break;
-	    }
+		if (NULL == filep) {
+			TIMER_BEGIN(1);
+	    	filep = fopen(temp_identified_file_path, "w+");
+	    	if (NULL == filep) {
+				printf("fopen %s failed\n", temp_identified_file_path);
+				break;
+	    	}
 
-	    fwrite(&identified_file_count, sizeof(uint64_t), 1, filep);
+	    	fwrite(&identified_file_count, sizeof(uint64_t), 1, filep);
 
-	}
-	//printf("write file:%lu , chunk:%lu to temp file\n", file->fid, file->num);
-	fwrite(file, sizeof(struct identified_file_info), 1, filep); 
-	uint64_t i = 0;
-	for (i = 0; i < file->num; i++)
-	    fwrite(&file->fps[i], sizeof(fingerprint), 1, filep); 
-	identified_file_count++;
+		}
+		//printf("write file:%lu , chunk:%lu to temp file\n", file->fid, file->num);
+		
+		fwrite(file, sizeof(struct identified_file_info), 1, filep); 
+		uint64_t i = 0;
+		for (i = 0; i < file->num; i++)
+	    	fwrite(&file->fps[i], sizeof(fingerprint), 1, filep); 
+		identified_file_count++;
+
+
+		identified_file_size += file->filesize;
+		count++;
+
+		free(file->fps);
+		free(file->sizes);
+
     }
+	printf("write %lu identified files\n", count);
+	printf("%s have identified files size:%lu\n", g1_temp_path, identified_file_size);
 
     // if have identified file
     if (NULL != filep) {
-	fseek(filep, 0,SEEK_SET);
-	fwrite(&identified_file_count, sizeof(uint64_t), 1, filep);
-	fclose(filep);
+		fseek(filep, 0,SEEK_SET);
+		fwrite(&identified_file_count, sizeof(uint64_t), 1, filep);
+		fclose(filep);
     }
     else {
-	printf("no identified files\n");
+		printf("no identified files\n");
     }
+	TIMER_END(1, time_1);
+	printf("write identified file to identified temp file cost:%lf(s)\n", time_1);
     		
     return NULL;
 }
@@ -458,129 +473,131 @@ void *read_remained_files_data_thread(void *arg) {
     int64_t number_of_files = 0;
     int64_t number_of_chunks = 0;
 
+	uint64_t remained_files_size = 0;
+
+	double time_1 = 0;
+	TIMER_DECLARE(1);
 
     char *data = NULL;
-    while ((one_file = sync_queue_pop(remained_files_queue))) {
-	if (NULL == new_metadata_fp) {
+	while ((one_file = sync_queue_pop(remained_files_queue))) {
+		remained_files_size += one_file->filesize;
+		if (NULL == new_metadata_fp) {
+			TIMER_BEGIN(1);
     		new_metadata_fp = fopen(new_meta_path, "w+");
     		if (NULL == new_metadata_fp) {
-			printf("fopen %s failed\n", new_meta_path);
+				printf("fopen %s failed\n", new_meta_path);
     		}
     		new_record_fp = fopen(new_record_path, "w+");
     		if (NULL == new_record_fp) {
-			printf("fopen %s failed\n", new_record_path);
+				printf("fopen %s failed\n", new_record_path);
     		}
     		old_pool_fp = fopen(pool_path, "r");
     		if (NULL == old_pool_fp) {
-			printf("fopen %s failed\n", pool_path);
-   		 }
-    		memcpy(metabuf + metabufoff, &bv_num, sizeof(bv_num));
+				printf("fopen %s failed\n", pool_path);
+   		 	}
+			memcpy(metabuf + metabufoff, &bv_num, sizeof(bv_num));
     		metabufoff += sizeof(bv_num);
     		memcpy(metabuf + metabufoff, &deleted, sizeof(deleted));
-    		metabufoff += sizeof(deleted);
-    		memcpy(metabuf + metabufoff, &number_of_files, sizeof(number_of_files));
-    		metabufoff += sizeof(number_of_files);
-    		memcpy(metabuf + metabufoff, &number_of_chunks, sizeof(number_of_chunks));
-    		metabufoff += sizeof(number_of_chunks);
+   			metabufoff += sizeof(deleted);
+   			memcpy(metabuf + metabufoff, &number_of_files, sizeof(number_of_files));
+   			metabufoff += sizeof(number_of_files);
+   			memcpy(metabuf + metabufoff, &number_of_chunks, sizeof(number_of_chunks));
+   			metabufoff += sizeof(number_of_chunks);
 
     		int32_t path_len = strlen(base_path);
     		memcpy(metabuf + metabufoff, &path_len, sizeof(int32_t));
-    		metabufoff += sizeof(int32_t);
+   			metabufoff += sizeof(int32_t);
 
     		memcpy(metabuf + metabufoff, base_path, path_len);
     		metabufoff += path_len;
-	}
-	
-	number_of_files++;
-	uint64_t i = 0;
-	
-        memcpy(metabuf + metabufoff, &(one_file->fid), sizeof(one_file->fid));
-        metabufoff += sizeof(one_file->fid);
-        memcpy(metabuf + metabufoff, &recipe_offset, sizeof(recipe_offset));
-        metabufoff += sizeof(recipe_offset);
-
-        memcpy(metabuf + metabufoff, &one_file->chunknum, sizeof(one_file->chunknum));
-        metabufoff += sizeof(one_file->chunknum);
-        memcpy(metabuf + metabufoff, &one_file->filesize, sizeof(one_file->filesize));
-        metabufoff += sizeof(one_file->filesize);
-
-	if (sizeof(one_file->fid) + sizeof(recipe_offset) + sizeof(one_file->chunknum) + sizeof(one_file->filesize) > metabufsize - metabufoff) {
-	    fwrite(metabuf, metabufoff, 1, new_metadata_fp);
-	    metabufoff = 0;
-	}
-
-	recipe_offset += (one_file->chunknum) * one_chunk_size;
-	
-	number_of_chunks += one_file->chunknum;
-	int32_t chunk_size;
-	for (i = 0; i < one_file->chunknum; i++) {
-	    struct chunk* ruc = g_hash_table_lookup(recently_unique_chunks, &one_file->fps[i]);
-	    if (NULL == ruc) {
-		if (storage_buffer.container_buffer == NULL) {
-		    storage_buffer.container_buffer = create_container();
-		    storage_buffer.chunks = g_sequence_new(free_chunk);
 		}
 	
-		myprintf("try to retrieve container %lu\n", one_file->fps_cid[i]);
-		chunk_size = retrieve_from_container(old_pool_fp, one_file->fps_cid[i], &data, one_file->fps[i]);
+		number_of_files++;
+		uint64_t i = 0;
+	
+    	memcpy(metabuf + metabufoff, &(one_file->fid), sizeof(one_file->fid));
+    	metabufoff += sizeof(one_file->fid);
+    	memcpy(metabuf + metabufoff, &recipe_offset, sizeof(recipe_offset));
+    	metabufoff += sizeof(recipe_offset);
 
-		if (container_overflow(storage_buffer.container_buffer, chunk_size))
-		{
-		    write_container_async(storage_buffer.container_buffer);    
-		    storage_buffer.container_buffer = create_container();
-		    storage_buffer.chunks = g_sequence_new(free_chunk);
+    	memcpy(metabuf + metabufoff, &one_file->chunknum, sizeof(one_file->chunknum));
+    	metabufoff += sizeof(one_file->chunknum);
+    	memcpy(metabuf + metabufoff, &one_file->filesize, sizeof(one_file->filesize));
+    	metabufoff += sizeof(one_file->filesize);
+
+		if (sizeof(one_file->fid) + sizeof(recipe_offset) + sizeof(one_file->chunknum) + sizeof(one_file->filesize) > metabufsize - metabufoff) {
+	    	fwrite(metabuf, metabufoff, 1, new_metadata_fp);
+	    	metabufoff = 0;
 		}
 
-		ruc = (struct chunk *)malloc(sizeof(struct chunk));
-		ruc->size = chunk_size;
-		ruc->id = container_count - 1; 
-		ruc->data = data;
-		memcpy(&ruc->fp, &one_file->fps[i], sizeof(fingerprint));
+		recipe_offset += (one_file->chunknum) * one_chunk_size;
+	
+		number_of_chunks += one_file->chunknum;
+		int32_t chunk_size;
+		for (i = 0; i < one_file->chunknum; i++) {
+	    	struct chunk* ruc = g_hash_table_lookup(recently_unique_chunks, &one_file->fps[i]);
+	    	if (NULL == ruc) {
+				if (storage_buffer.container_buffer == NULL) {
+		    		storage_buffer.container_buffer = create_container();
+		    		storage_buffer.chunks = g_sequence_new(free_chunk);
+				}
+	
+				chunk_size = retrieve_from_container(old_pool_fp, one_file->fps_cid[i], &data, one_file->fps[i]);
+
+				if (container_overflow(storage_buffer.container_buffer, chunk_size))
+				{
+		    		write_container_async(storage_buffer.container_buffer);    
+		    		storage_buffer.container_buffer = create_container();
+		    		storage_buffer.chunks = g_sequence_new(free_chunk);
+				}
+
+				ruc = (struct chunk *)malloc(sizeof(struct chunk));
+				ruc->size = chunk_size;
+				ruc->id = container_count - 1; 
+				ruc->data = data;
+				memcpy(&ruc->fp, &one_file->fps[i], sizeof(fingerprint));
 		
-		char code[40];
-		hash2code(ruc->fp, code);
-		myprintf("add chunk fp:%s size:%d to container:%lu\n", code, ruc->size, ruc->id);
-		add_chunk_to_container(storage_buffer.container_buffer, ruc);
+				add_chunk_to_container(storage_buffer.container_buffer, ruc);
 
-		free(ruc->data);
-		ruc->data = NULL;
-		g_hash_table_insert(recently_unique_chunks, &one_file->fps[i], ruc);
-	    }
+				free(ruc->data);
+				ruc->data = NULL;
+				g_hash_table_insert(recently_unique_chunks, &one_file->fps[i], ruc);
+			}
 	    
-	    chunk_size = ruc->size;
+			chunk_size = ruc->size;
 
-	    if(recordbufoff + sizeof(fingerprint) + sizeof(containerid) + sizeof(chunk_size) > recordbufsize) {
-		fwrite(recordbuf, recordbufoff, 1, new_record_fp);
-		recordbufoff = 0;
-	    }		
+	    	if(recordbufoff + sizeof(fingerprint) + sizeof(containerid) + sizeof(chunk_size) > recordbufsize) {
+				fwrite(recordbuf, recordbufoff, 1, new_record_fp);
+				recordbufoff = 0;
+	    	}		
 
-	    struct fp_data * one_data = (struct fp_data *)malloc(sizeof(struct fp_data));			
-	    one_data->data = data;	
-	    memcpy(recordbuf + recordbufoff, one_file->fps[i], sizeof(fingerprint)); 
-	    recordbufoff += sizeof(fingerprint);
-	    memcpy(recordbuf + recordbufoff, &ruc->id, sizeof(containerid)); 
-	    recordbufoff += sizeof(containerid);
-	    memcpy(recordbuf + recordbufoff, &chunk_size, sizeof(chunk_size)); 
-	    recordbufoff += sizeof(chunk_size);
+	    	struct fp_data * one_data = (struct fp_data *)malloc(sizeof(struct fp_data));			
+	    	one_data->data = data;	
+	    	memcpy(recordbuf + recordbufoff, one_file->fps[i], sizeof(fingerprint)); 
+	    	recordbufoff += sizeof(fingerprint);
+	    	memcpy(recordbuf + recordbufoff, &ruc->id, sizeof(containerid)); 
+	    	recordbufoff += sizeof(containerid);
+	    	memcpy(recordbuf + recordbufoff, &chunk_size, sizeof(chunk_size)); 
+	    	recordbufoff += sizeof(chunk_size);
+		}
+		if (NULL != one_file->fps)
+			free(one_file->fps);
+		if (NULL != one_file->fps_cid)
+			free(one_file->fps_cid);
+		free(one_file);
+		one_file = NULL;
 	}
-	if (NULL != one_file->fps)
-		free(one_file->fps);
-	if (NULL != one_file->fps_cid)
-		free(one_file->fps_cid);
-	free(one_file);
-	one_file = NULL;
-  }
 
-    myprintf("%s remained %lu files\n", g1_path, number_of_files);
+    printf("%s remained %lu files, total_size:%lu\n", g1_path, number_of_files, remained_files_size);
     //display_hash_table(recently_unique_chunks);
-    
+    //
     if (0 == number_of_files)
-	goto out;
+		goto out;
     write_container_async(storage_buffer.container_buffer);    
     close_container_store();
 
     if( recordbufoff ) {
-	fwrite(recordbuf, recordbufoff, 1, new_record_fp);
+		fwrite(recordbuf, recordbufoff, 1, new_record_fp);
     	recordbufoff = 0;
     }
     if( metabufoff ) {
@@ -597,6 +614,9 @@ void *read_remained_files_data_thread(void *arg) {
     fclose(old_pool_fp);
     fclose(new_metadata_fp);
     fclose(new_record_fp);
+
+	TIMER_END(1, time_1);
+	printf("rewrite remianed files cost:%lf(s)\n", time_1);
 
 	char ghash_file[128] = {0};
 	sprintf(ghash_file, "%s/ghash_file", g1_path);

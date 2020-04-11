@@ -87,8 +87,8 @@ void *restore_temp_thread(void *arg) {
     FILE *hash_filep = fopen(g_hash_file, "r");
     if (NULL == hash_filep)
     {
-	printf("fopen %s failed\n", g_hash_file);
-	goto no_ghash;
+		printf("fopen %s failed\n", g_hash_file);
+		goto no_ghash;
     }
     uint64_t item_count = 0;
     fread(&item_count, sizeof(item_count), 1, hash_filep);
@@ -97,12 +97,12 @@ void *restore_temp_thread(void *arg) {
 
     uint64_t i = 0;
     while (i < item_count) {
-	fingerprint *fp = malloc(sizeof(fingerprint));
-	struct chunk *ck = malloc(sizeof(struct chunk)); 
-	fread(fp, sizeof(fingerprint), 1, hash_filep );
-	fread(ck, sizeof(struct chunk), 1, hash_filep );
-	g_hash_table_insert(recently_unique_chunks, fp, ck);
-	i++;
+		fingerprint *fp = malloc(sizeof(fingerprint));
+		struct chunk *ck = malloc(sizeof(struct chunk)); 
+		fread(fp, sizeof(fingerprint), 1, hash_filep );
+		fread(ck, sizeof(struct chunk), 1, hash_filep );
+		g_hash_table_insert(recently_unique_chunks, fp, ck);
+		i++;
     }
     fclose(hash_filep);
 
@@ -112,52 +112,47 @@ no_ghash:
     filep =  fopen(temp_identified_file_path, "r");
     if (NULL == filep)
     {
-	printf("fopen %s failed, maybe no identified file\n", temp_identified_file_path);
-	goto out;
+		printf("fopen %s failed, maybe no identified file\n", temp_identified_file_path);
+		goto out;
     }
     uint64_t identified_file_count = 0;
     fread(&identified_file_count, sizeof(uint64_t), 1, filep);
     printf("%s have %lu identified file move to %s\n", source_temp_path, identified_file_count, target_path);
     if (0 == identified_file_count)
     {
-	goto out;
+		goto out;
     }
 
     struct identified_file_info *identified_files = (struct identified_file_info *)malloc(identified_file_count * sizeof(struct identified_file_info));
     i = 0;
     while(fread(identified_files + i, sizeof(struct identified_file_info), 1, filep)) {
-	identified_files[i].fps = (fingerprint *)malloc(sizeof(fingerprint) * identified_files[i].num);		
-	identified_files[i].fp_cids = (uint64_t *)malloc(sizeof(uint64_t) * identified_files[i].num);		
-	identified_files[i].sizes = (int32_t *)malloc(sizeof(int32_t) * identified_files[i].num); 
+		identified_files[i].fps = (fingerprint *)malloc(sizeof(fingerprint) * identified_files[i].num);		
+		identified_files[i].fp_cids = (uint64_t *)malloc(sizeof(uint64_t) * identified_files[i].num);		
+		identified_files[i].sizes = (int32_t *)malloc(sizeof(int32_t) * identified_files[i].num); 
 
-	//printf("read file:%lu chunk:%lu from temp file:%s\n", identified_files[i].fid, identified_files[i].num, temp_identified_file_path);	
-    
-	fingerprint temp_fp;
-	uint64_t j = 0;
-	while(j < identified_files[i].num) {
-	    fread(&temp_fp, sizeof(fingerprint), 1, filep);
-	    memcpy(&identified_files[i].fps[j], &temp_fp, sizeof(fingerprint));
-	    j++;
-	}
+		fingerprint temp_fp;
+		uint64_t j = 0;
+		while(j < identified_files[i].num) {
+	    	fread(&temp_fp, sizeof(fingerprint), 1, filep);
+	    	memcpy(&identified_files[i].fps[j], &temp_fp, sizeof(fingerprint));
+	    	j++;
+		}
 
-	j = 0;
-	while(j < identified_files[i].num) {
-	    struct chunk* ck = g_hash_table_lookup(recently_unique_chunks, &identified_files[i].fps[j]);
-	    if (NULL == ck) {
-		printf("can't find ck in recent hash\n");
-		assert(0);
-	    }
-	    identified_files[i].fp_cids[j] = ck->id;
-	    identified_files[i].sizes[j] = ck->size;
+		j = 0;
+		while(j < identified_files[i].num) {
+	    	struct chunk* ck = g_hash_table_lookup(recently_unique_chunks, &identified_files[i].fps[j]);
+	    	if (NULL == ck) {
+				printf(BACKGROUND_COLOR_RED"can't find ck in recent hash\n"COLOR_NONE);
+				exit(-1);
+	    	}
+	    	identified_files[i].fp_cids[j] = ck->id;
+	    	identified_files[i].sizes[j] = ck->size;
 	
-	    char code[41] = {0};
-	    hash2code(identified_files[i].fps[j], code);
-	    //printf("assign fp:%s size:%d to container:%lu\n", code, identified_files[i].sizes[j], identified_files[i].fp_cids[j]);
-	    j++;
-	}
+	    	j++;
+		}
 
-	sync_queue_push(write_identified_file_to_destor_queue, identified_files+i);
-	i++;
+		sync_queue_push(write_identified_file_to_destor_queue, identified_files+i);
+		i++;
     }
 
 out:
@@ -203,9 +198,13 @@ void *write_identified_files_to_destor_thread(void *arg) {
 
     fseek(metadata_fp, 0, SEEK_END);
 
+	uint64_t identified_files_size = 0;
 
     struct identified_file_info *one_file;
     while ((one_file = sync_queue_pop(write_identified_file_to_destor_queue))) {
+
+		identified_files_size += one_file->filesize;
+
         memcpy(metabuf + metabufoff, &(one_file->fid), sizeof(one_file->fid));
         metabufoff += sizeof(one_file->fid);
         memcpy(metabuf + metabufoff, &recipe_offset, sizeof(recipe_offset));
@@ -257,6 +256,8 @@ void *write_identified_files_to_destor_thread(void *arg) {
     fwrite(&deleted, sizeof(deleted), 1, metadata_fp);
     fwrite(&number_of_files, sizeof(number_of_files), 1, metadata_fp);
     fwrite(&number_of_chunks, sizeof(number_of_chunks), 1, metadata_fp);
+
+	printf("restore identified files size:%lu\n", identified_files_size);
     
     fclose(metadata_fp);
     fclose(record_fp);
@@ -276,11 +277,17 @@ int main(int argc, char *argv[])
 	strcpy(source_temp_path, argv[1]);
 	strcpy(target_path, argv[2]);
 
+	double time_1 = 0;
+	TIMER_DECLARE(1);
+
+	TIMER_BEGIN(1);
 	write_identified_file_to_destor_queue = sync_queue_new(50); 
 	pthread_create(&tid1, NULL, restore_temp_thread, NULL);
 	pthread_create(&tid3, NULL, write_identified_files_to_destor_thread, NULL);
 	pthread_join(tid1, NULL);
 	pthread_join(tid3, NULL);
+	TIMER_END(1, time_1);
+	printf("total time cost:%lf(s)\n", time_1);
 
 	return 0;
 }

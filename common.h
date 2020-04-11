@@ -75,5 +75,7 @@ GHashTable *load_hash_table(char *ghash_file);
 
 void myprintf(const char *cmd, ...); 
 void show_fingerprint(fingerprint *p);
+gboolean g_fid_equal(const void *fid1, const void *fid2);
+void free_fid(void *fid);
 
 #endif

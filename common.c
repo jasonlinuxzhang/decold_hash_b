@@ -91,6 +91,14 @@ void print_unsigned(unsigned char *u, int64_t len)
 		printf("%hhu", u[i]);
 	printf("\n");
 }
+gboolean g_fid_equal(const void *fid1, const void *fid2)
+{
+	return *(uint64_t *)fid1 == *(uint64_t *)fid2;
+}
+void free_fid(void *fid)
+{
+	return free(fid);
+}
 
 gboolean g_fingerprint_equal(const void *fp1, const void *fp2)
 {
@@ -122,7 +130,7 @@ void storage_key_value(gpointer key, gpointer value, gpointer user_data)
     struct chunk *ck = value;
     FILE *filep = user_data;
     
-    fwrite(*fp, sizeof(fingerprint), 1, filep);
+    fwrite(fp, sizeof(fingerprint), 1, filep);
     fwrite(ck, sizeof(struct chunk), 1, filep);
     
     item_count++;

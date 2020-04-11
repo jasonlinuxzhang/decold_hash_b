@@ -47,10 +47,10 @@ int add_chunk_to_container(struct container* c, struct chunk* ck) {
     char code[41] = {0};
 
     if (g_hash_table_contains(c->meta.map, &ck->fp)) {
-    	hash2code(ck->fp, code);
-	printf("fp:%s already exist\n", code);
-	ck->id = c->meta.id;
-	return 0;
+    	//hash2code(ck->fp, code);
+		//printf("fp:%s already exist\n", code);
+		ck->id = c->meta.id;
+		return 0;
     }
 
     struct metaEntry* me = (struct metaEntry*) malloc(sizeof(struct metaEntry));
@@ -98,7 +98,6 @@ void write_container_async(struct container* c) {
 	return;
     }
 
-    myprintf("push container:%lu\n", c->meta.id);
     sync_queue_push(container_buffer, c);
 }
 
@@ -115,8 +114,8 @@ void write_container(struct container* c) {
 	return;
     }
 
-    VERBOSE("Append phase: Writing container %lld of %d chunks\n", c->meta.id,
-	    c->meta.chunk_num);
+	if (c->meta.id%50 == 0)
+    VERBOSE("Append phase: Writing container %lld of %d chunks\n", c->meta.id, c->meta.chunk_num);
 
     unsigned char * cur = &c->data[CONTAINER_SIZE - CONTAINER_META_SIZE];
     ser_declare;

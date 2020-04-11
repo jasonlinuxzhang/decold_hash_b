@@ -66,26 +66,25 @@ void restore_migrated_files(char *temp_migrated_file_path, GHashTable *recently_
 		printf("fopen %s failed, maybe not exist\n", temp_migrated_file_path);
 		return;
 	}
-    	uint64_t migrated_file_count = 0;
-    	fread(&migrated_file_count, sizeof(uint64_t), 1, filep);
-    	printf("%s have %lu migrated file move to %s\n", source_temp_path, migrated_file_count, target_path);
-    	if (0 == migrated_file_count)
-    	{
+    uint64_t migrated_file_count = 0;
+    fread(&migrated_file_count, sizeof(uint64_t), 1, filep);
+    printf("%s have %lu migrated file move to %s\n", source_temp_path, migrated_file_count, target_path);
+    if (0 == migrated_file_count)
+    {
 		return;
-    	}
-
+    }
 
 	char container_path[128] = {0};
 	sprintf(container_path, "%s/container.pool", target_path);
 	init_container_store(container_path, "r+");
 
-    	struct migrated_file_info *migrated_files = (struct migrated_file_info *)malloc(migrated_file_count * sizeof(struct migrated_file_info));
-    	migrated_file_info2 *migrated_files2 = (migrated_file_info2 *)malloc(migrated_file_count * sizeof(migrated_file_info2));
+    struct migrated_file_info *migrated_files = (struct migrated_file_info *)malloc(migrated_file_count * sizeof(struct migrated_file_info));
+    migrated_file_info2 *migrated_files2 = (migrated_file_info2 *)malloc(migrated_file_count * sizeof(migrated_file_info2));
 	struct chunk* ruc;
 	char *data;
 	uint64_t i = 0;
-    	i = 0;
-    	while(fread(migrated_files + i, sizeof(struct migrated_file_info), 1, filep)) {
+    i = 0;
+    while(fread(migrated_files + i, sizeof(struct migrated_file_info), 1, filep)) {
 		struct migrated_file_info *p = migrated_files + i;
 		p->fps = malloc(sizeof(fingerprint) * p->total_num);
 		p->arr = malloc(2 * sizeof(uint64_t) * p->total_num);
@@ -98,11 +97,10 @@ void restore_migrated_files(char *temp_migrated_file_path, GHashTable *recently_
 		t->sizes = malloc(sizeof(int32_t) * t->num);
 		t->fp_cids = malloc(sizeof(uint64_t) * t->num);
 
-		//printf("read migriated files:%ld chunknum:%d\n", t->fid, t->num);
-	    	uint64_t j = 0;
+	   	uint64_t j = 0;
 		// fps
-	    	for (j = 0; j < p->total_num; j++) {
-	        	fread(&p->fps[j], sizeof(fingerprint), 1, filep); 
+	    for (j = 0; j < p->total_num; j++) {
+	       	fread(&p->fps[j], sizeof(fingerprint), 1, filep); 
 			memcpy(&t->fps[j], &p->fps[j], sizeof(fingerprint));	
 		}
 
@@ -116,13 +114,13 @@ void restore_migrated_files(char *temp_migrated_file_path, GHashTable *recently_
 
 		for (j = 0; j < p->total_num; j++) {
 			if (p->arr[j + p->total_num] == 1) {
-	    			struct chunk* ck = g_hash_table_lookup(recently_unique_chunks, &p->fps[j]);
-	    			if (NULL == ck) {
-					printf("can't find ck in recent hash\n");
-					display_hash_table(recently_unique_chunks);
+	    		struct chunk* ck = g_hash_table_lookup(recently_unique_chunks, &p->fps[j]);
+	    		if (NULL == ck) {
+					printf(BACKGROUND_COLOR_RED"can't find ck in recent hash\n"COLOR_NONE);
+					//display_hash_table(recently_unique_chunks);
 					show_fingerprint(p->fps[j]);
-					return;
-	    			}
+					exit(-1);
+	    		}
 				
 				t->fp_cids[j] = ck->id;
 				t->sizes[j] = ck->size;
@@ -140,10 +138,10 @@ void restore_migrated_files(char *temp_migrated_file_path, GHashTable *recently_
 					storage_buffer.chunks = g_sequence_new(free_chunk);
 				}
 
-		                ruc = (struct chunk *)malloc(sizeof(struct chunk));
-	        	        ruc->size = p->arr[j];
-        	        	ruc->id = container_count - 1;
-                		ruc->data = data;
+		        ruc = (struct chunk *)malloc(sizeof(struct chunk));
+	            ruc->size = p->arr[j];
+      	      	ruc->id = container_count - 1;
+           		ruc->data = data;
 				memcpy(&ruc->fp, &p->fps[j], sizeof(fingerprint));
 				add_chunk_to_container(storage_buffer.container_buffer, ruc);
 				g_hash_table_insert(recently_unique_chunks, &p->fps[j], ruc);
@@ -172,24 +170,29 @@ void *restore_temp_thread(void *arg) {
     FILE *hash_filep = fopen(g_hash_file, "r");
     if (NULL == hash_filep)
     {
-	printf("fopen %s failed\n", g_hash_file);
-	return;
+		printf("fopen %s failed\n", g_hash_file);
+		return;
     }
     uint64_t item_count = 0;
     fread(&item_count, sizeof(item_count), 1, hash_filep);
 
     printf("%s have %lu item\n", target_path, item_count);
 
+	double time_2 = 0;
+	TIMER_DECLARE(2);
+	TIMER_BEGIN(2);
     uint64_t i = 0;
     while (i < item_count) {
-	fingerprint *fp = malloc(sizeof(fingerprint));
-	struct chunk *ck = malloc(sizeof(struct chunk)); 
-	fread(fp, sizeof(fingerprint), 1, hash_filep );
-	fread(ck, sizeof(struct chunk), 1, hash_filep );
-	g_hash_table_insert(recently_unique_chunks, fp, ck);
-	i++;
+		fingerprint *fp = malloc(sizeof(fingerprint));
+		struct chunk *ck = malloc(sizeof(struct chunk)); 
+		fread(fp, sizeof(fingerprint), 1, hash_filep );
+		fread(ck, sizeof(struct chunk), 1, hash_filep );
+		g_hash_table_insert(recently_unique_chunks, fp, ck);
+		i++;
     }
     fclose(hash_filep);
+	TIMER_END(2, time_2);
+	printf("construct htable cost:%lf(s)\n", time_2);
 
 	restore_migrated_files(temp_migrated_file_path, recently_unique_chunks);	
 
@@ -250,34 +253,31 @@ void *write_migriated_files_to_destor_thread(void *arg) {
             metabufoff = 0;
         }
 
-	recipe_offset += (one_file->num) * one_chunk_size;
-	number_of_chunks += one_file->num;
+		recipe_offset += (one_file->num) * one_chunk_size;
+		number_of_chunks += one_file->num;
 
-	for (i = 0; i < one_file->num; i++) {
-	    if(recordbufoff + sizeof(fingerprint) + sizeof(containerid) + sizeof(int32_t) > recordbufsize) {
-		fwrite(recordbuf, recordbufoff, 1, record_fp);
-		recordbufoff = 0;
-	    }		
+		for (i = 0; i < one_file->num; i++) {
+	    	if(recordbufoff + sizeof(fingerprint) + sizeof(containerid) + sizeof(int32_t) > recordbufsize) {
+				fwrite(recordbuf, recordbufoff, 1, record_fp);
+				recordbufoff = 0;
+	    	}		
 
-	    memcpy(recordbuf + recordbufoff, &one_file->fps[i], sizeof(fingerprint)); 
-	    recordbufoff += sizeof(fingerprint);
-	    memcpy(recordbuf + recordbufoff, &one_file->fp_cids[i], sizeof(containerid)); 
-	    recordbufoff += sizeof(containerid);
-	    memcpy(recordbuf + recordbufoff, &one_file->sizes[i], sizeof(one_file->sizes[i])); 
-	    recordbufoff += sizeof(one_file->sizes[i]);
+	    	memcpy(recordbuf + recordbufoff, &one_file->fps[i], sizeof(fingerprint)); 
+	    	recordbufoff += sizeof(fingerprint);
+	    	memcpy(recordbuf + recordbufoff, &one_file->fp_cids[i], sizeof(containerid)); 
+	    	recordbufoff += sizeof(containerid);
+	    	memcpy(recordbuf + recordbufoff, &one_file->sizes[i], sizeof(one_file->sizes[i])); 
+	    	recordbufoff += sizeof(one_file->sizes[i]);
 
-	    //char code[41] = {0};
-	    //hash2code(one_file->fps[i], code);
-	    //printf("write migratied files fp:%s cid:%lu size:%d to %ld\n", code, one_file->fp_cids[i], one_file->sizes[i], recipe_offset - (one_file->num) * one_chunk_size);
-	}
-	number_of_files++;	
+		}
+		number_of_files++;	
     }
 
     if (metabufoff) {
-	fwrite(metabuf, metabufoff, 1, metadata_fp);
+		fwrite(metabuf, metabufoff, 1, metadata_fp);
     }
     if (recordbufoff) {
-	fwrite(recordbuf, recordbufoff, 1, record_fp);
+		fwrite(recordbuf, recordbufoff, 1, record_fp);
     }
     
     fseek(metadata_fp, 0, SEEK_SET);
@@ -299,6 +299,10 @@ int main(int argc, char *argv[])
 		return -1;
 	}
 	
+	double time_1 = 0;
+	TIMER_DECLARE(1);
+
+	TIMER_BEGIN(1);
 	strcpy(source_temp_path, argv[1]);
 	strcpy(target_path, argv[2]);
     
@@ -307,5 +311,7 @@ int main(int argc, char *argv[])
 	pthread_create(&tid3, NULL, write_migriated_files_to_destor_thread, NULL);
 	pthread_join(tid1, NULL);
 	pthread_join(tid3, NULL);
+	TIMER_END(1, time_1);
+	printf("total cost:%lf(s)\n", time_1);
 	return 0;
 }

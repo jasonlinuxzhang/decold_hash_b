@@ -40,15 +40,6 @@ static int64_t read_next_n_chunk_pointers(FILE *recipe_fp, int64_t fid, struct f
 		if(cp->id > max_cid)
 			max_cid = cp->id;
 
-		if (LEVEL >= 2)
-		{
-			char code[41];
-			hash2code(s1[*s1_count].fp, code);
-			code[40] = 0;
-			VERBOSE("   CHUNK:fid=[%8" PRId64 "], order=%" PRId64 ", size=%" PRId64 ", container_id=%" PRId64 ", fp=%s\n", \
-				s1[*s1_count].fid, s1[*s1_count].order, s1[*s1_count].size, s1[*s1_count].cid, code);
-		}
-
 		(*s1_count)++;
 	}
 	free(cp);
@@ -97,6 +88,7 @@ void read_recipe(const char *path, struct fp_info **s1_t, int64_t *s1_count, str
 	struct fp_info *s1 = (struct fp_info *)malloc(number_of_chunks * sizeof(struct fp_info));
 	struct file_info *mr = (struct file_info *)malloc(number_of_files * sizeof(struct file_info));
 
+	uint64_t total_data_size = 0;
 	int64_t i;
 	for (i = 0; i < number_of_files; i++)
 	{
@@ -109,6 +101,8 @@ void read_recipe(const char *path, struct fp_info **s1_t, int64_t *s1_count, str
 		fread(&file->offset, sizeof(file->offset), 1, meta_fp);
 		fread(&file->chunknum, sizeof(file->chunknum), 1, meta_fp);
 		fread(&file->filesize, sizeof(file->filesize), 1, meta_fp);
+
+		total_data_size += file->filesize;	
 
 		//map_recipe
 		mr[*mr_count].fid = file->fid;
@@ -138,6 +132,7 @@ void read_recipe(const char *path, struct fp_info **s1_t, int64_t *s1_count, str
 	fclose(meta_fp);
 	fclose(recipe_fp);
 
+	printf("%s data size:%lu\n", path, total_data_size);
 }
 
 static int32_t get_chunk_from_container(unsigned char **vv, struct container *c, fingerprint fp)
@@ -202,10 +197,6 @@ int32_t retrieve_from_container(FILE* pool_fp, containerid cid, unsigned char **
 		unser_bytes(&me->len, sizeof(int32_t));
 		unser_bytes(&me->off, sizeof(int32_t));
 		g_hash_table_insert(c->meta.map, &me->fp, me);
-
-		char code[41] = {0};
-		hash2code(me->fp, code);	
-		myprintf("read fp:%s len:%d off:%d\n", code, me->len, me->off);
 	}
 
 	if (!c->meta.map)
@@ -215,6 +206,7 @@ int32_t retrieve_from_container(FILE* pool_fp, containerid cid, unsigned char **
 
 	int32_t chunk_size = get_chunk_from_container(v, c, fp);
 
+	g_hash_table_destroy(c->meta.map);
 	free(c->data);
 	free(c);
 
