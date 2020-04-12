@@ -45,7 +45,7 @@ void cal_inter(GHashTable *g1_unique_chunks, GHashTable *g2_unique_chunks, struc
 			continue;
 		}
 
-		memcpy(scommon11[*sc1_count].fp, s1[a].fp, sizeof(fingerprint));
+		memcpy(&scommon11[*sc1_count].fp, &s1[a].fp, sizeof(fingerprint));
 		scommon11[*sc1_count].size = s1[a].size;
 
 		scommon11[*sc1_count].cid = s1[a].cid;
@@ -198,11 +198,24 @@ void file_find(GHashTable *g2_unique_chunks, struct file_info *mr, int64_t mr_co
 			for (s = fp_info_start; s < fp_info_start + chunk_num ; s++)
 			{
 				int64_t order = s - fp_info_start;
-				memcpy((ff[*ff_count].fps)[order], sc[s].fp, sizeof(fingerprint));
+				memcpy(&(ff[*ff_count].fps)[order], &sc[s].fp, sizeof(fingerprint));
 				(ff[*ff_count].sizes)[order] = sc[s].size;
 			}
 			(*ff_count)++;
 		} else {
+			if (1 - (1.0)*non_same_chunk_count/chunk_num >= 0.95) 
+				mig_count[7]++;
+			else if (1 - (1.0)*non_same_chunk_count/chunk_num >= 0.90)
+				mig_count[6]++;
+			else if (1 - (1.0)*non_same_chunk_count/chunk_num >= 0.85)
+				mig_count[5]++;
+			else if (1 - (1.0)*non_same_chunk_count/chunk_num >= 0.80)
+				mig_count[4]++;
+			else if (1 - (1.0)*non_same_chunk_count/chunk_num >= 0.75)
+				mig_count[3]++;
+			else if (1 - (1.0)*non_same_chunk_count/chunk_num >= 0.70)
+				mig_count[2]++;
+
 			m[*m_count].filesize = fi->size;
 			m[*m_count].fid = fi->fid;
 			m[*m_count].total_num = fi->chunknum;
@@ -218,7 +231,7 @@ void file_find(GHashTable *g2_unique_chunks, struct file_info *mr, int64_t mr_co
 			for (s = 0; s < chunk_num; s++)
 			{
 				//fps are sorted by order
-				memcpy((m[*m_count].fps)[s], sc[s + fp_info_start].fp, sizeof(fingerprint));
+				memcpy(&(m[*m_count].fps)[s], &sc[s + fp_info_start].fp, sizeof(fingerprint));
 
 				(m[*m_count].arr)[s] = sc[s + fp_info_start].size;
 				//in ==1, mean it in the scommon

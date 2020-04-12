@@ -77,5 +77,6 @@ void myprintf(const char *cmd, ...);
 void show_fingerprint(fingerprint *p);
 gboolean g_fid_equal(const void *fid1, const void *fid2);
 void free_fid(void *fid);
+uint64_t get_hashtable_data_size(GHashTable *table);
 
 #endif

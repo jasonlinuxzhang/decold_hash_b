@@ -130,8 +130,8 @@ void storage_key_value(gpointer key, gpointer value, gpointer user_data)
     struct chunk *ck = value;
     FILE *filep = user_data;
     
-    fwrite(fp, sizeof(fingerprint), 1, filep);
     fwrite(ck, sizeof(struct chunk), 1, filep);
+    fwrite(fp, sizeof(fingerprint), 1, filep);
     
     item_count++;
 }
@@ -162,6 +162,24 @@ void storage_hash_table(GHashTable *table, char *ghash_file)
     fwrite(&item_count, sizeof(item_count), 1, fp);
     fclose(fp);
 }
+void get_dat_size(gpointer key, gpointer value, gpointer user_data)
+{
+
+    fingerprint *fp = key;
+    struct chunk *ck = value;
+    
+	uint64_t *data_size = user_data;
+
+	*data_size += ck->size;
+}
+
+uint64_t get_hashtable_data_size(GHashTable *table)
+{
+	uint64_t unique_data_size = 0;
+    g_hash_table_foreach(table, get_dat_size, &unique_data_size);
+	
+	return unique_data_size;
+}
 
 GHashTable *load_hash_table(char *ghash_file)
 {
@@ -175,17 +193,22 @@ GHashTable *load_hash_table(char *ghash_file)
 
 	uint64_t unique_chunks_number;
 	fread(&unique_chunks_number, sizeof(unique_chunks_number), 1, fp);
-	struct chunk *cks = (struct chunk *)malloc(unique_chunks_number * sizeof(struct chunk));
+
+	printf("%s ghash_file have %lu items\n", ghash_file, unique_chunks_number);
 
 	table = g_hash_table_new_full(g_int64_hash, g_fingerprint_equal, NULL, free_chunk);
 
+	uint64_t data_size = 0;
 	uint64_t i = 0;
 	for (i = 0; i < unique_chunks_number; i++) {
-		struct chunk *ck = cks + i;
-    	fread(&ck->fp, sizeof(fingerprint), 1, fp);
+		struct chunk *ck = (struct chunk *)malloc(sizeof(struct chunk));
     	fread(ck, sizeof(struct chunk), 1, fp);
+    	fread(&ck->fp, sizeof(fingerprint), 1, fp);
 		g_hash_table_insert(table, &ck->fp, ck);
+		data_size += ck->size;
 	}	
+
+	printf(FONT_COLOR_RED"%s unique chunk size %lu \n"COLOR_NONE, ghash_file, data_size);
 
 	fclose(fp);
 	return table;

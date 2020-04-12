@@ -8,7 +8,7 @@ FLAGS   = -g
 GCCFLAGS =  `pkg-config --cflags --libs glib-2.0 `
 DEFINES = 
 HEADER  = -I ./
-LIBS    = -lglib -lpthread -lrocksdb -lrt -lz  -ldl
+LIBS    = -lglib -lpthread  -lrt -lz  -ldl
 LINKFLAGS =
 
 #HEADER += -I./

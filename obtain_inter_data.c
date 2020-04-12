@@ -12,7 +12,7 @@ int enable_migration = 1;
 int enable_refs = 0;
 int enable_topk = 0;
 long int big_file = 0;
-float migration_threshold = 0.7;
+float migration_threshold = 0.8;
 
 char g1_temp_path[128] = {0};
 char g2_temp_path[128] = {0};
@@ -42,6 +42,7 @@ pthread_t tid5;
 containerid container_count;
 
 GHashTable *g1_unique_chunks, *g2_unique_chunks;
+GHashTable *rewrited_files;
 
 void free_chunk(struct chunk* ck) {
     if (ck->data) {
@@ -123,7 +124,7 @@ void update_remained_files(int group, struct file_info *files, uint64_t file_cou
 	}
 
 	TIMER_END(1, time_1);
-	printf("construct rewrite(identified/migriated files cost:%lf(s)\n", time_1);
+	printf("construct rewrite(identified/migriated) files cost:%lf(s)\n", time_1);
 
 	uint64_t start = 0;
 	uint64_t total_fps = 0;
@@ -142,12 +143,14 @@ void update_remained_files(int group, struct file_info *files, uint64_t file_cou
 	    one_file->chunknum = files[i].chunknum;
 	    one_file->fps = (fingerprint *)malloc(sizeof(fingerprint) * one_file->chunknum);
 	    one_file->fps_cid = (uint64_t *)malloc(sizeof(uint64_t) * one_file->chunknum);
+	    one_file->fps_sizes = (int32_t *)malloc(sizeof(int32_t) * one_file->chunknum);
 
 		start = total_fps - files[i].chunknum;
 	    uint32_t i = 0;
 	    for (i = 0; i < one_file->chunknum; i++) {
-			memcpy(one_file->fps[i], s1_ord[start + i].fp,  sizeof(fingerprint));	
+			memcpy(&one_file->fps[i], &s1_ord[start + i].fp,  sizeof(fingerprint));	
 			one_file->fps_cid[i] = s1_ord[start + i].cid;
+			one_file->fps_sizes[i] = s1_ord[start + i].size;
 	    } 
 
 	    remained_file_count++;
@@ -161,6 +164,52 @@ void update_remained_files(int group, struct file_info *files, uint64_t file_cou
 	sync_queue_term(remained_files_queue);
 
 	g_hash_table_destroy(rewrite_files);
+}
+
+void find_dedup_chunks(GHashTable *unique_chunks, struct identified_file_info *identified_files, uint64_t identified_file_count, struct migrated_file_info *migrated_files, uint64_t migrated_file_count)
+{
+	uint64_t g1_dedup_size = 0;
+	uint64_t g1_dedup_chunk = 0;
+	int i = 0;
+	int j = 0;
+	for (i = 0; i < identified_file_count; i++) {
+		struct identified_file_info *one_file = identified_files + i;
+		for (j = 0; j < one_file->num; j++)	
+		{
+			struct chunk *cuk = g_hash_table_lookup(unique_chunks, &one_file->fps[j]);
+			if (NULL == cuk) {
+				printf(BACKGROUND_COLOR_RED"can't find identified files's chunk in curent group"COLOR_NONE"\n");
+				exit(-1);
+			}
+			cuk->ref_count--;
+			if (0 == cuk->ref_count) {
+				g1_dedup_size += one_file->sizes[j];
+				g_hash_table_remove(unique_chunks, &one_file->fps[j]);
+				g1_dedup_chunk++;
+			}
+		}
+	}	
+
+	for (i = 0; i < migrated_file_count; i++) {
+		struct migrated_file_info *one_file = migrated_files + i;
+		for (j = 0; j < one_file->total_num; j++)	
+		{
+			struct chunk *cuk = g_hash_table_lookup(unique_chunks, &one_file->fps[j]);
+			if (NULL == cuk) {
+				printf(BACKGROUND_COLOR_RED"can't find migrated rewrite files's chunk in curent group"COLOR_NONE"\n");
+				exit(-1);
+			}
+			cuk->ref_count--;
+			if (0 == cuk->ref_count) {
+				g1_dedup_size += one_file->arr[j];
+				g_hash_table_remove(unique_chunks, &one_file->fps[j]);
+				g1_dedup_chunk++;
+			}
+		}
+	}	
+
+	printf(FONT_COLOR_RED"g1 can dedup %lu sizes data\n"COLOR_NONE, g1_dedup_size);
+	printf(FONT_COLOR_RED"g1 can dedup %lu chunk\n"COLOR_NONE, g1_dedup_chunk);
 }
 
 void intersection(const char *path1, const char *path2)
@@ -185,16 +234,19 @@ void intersection(const char *path1, const char *path2)
 
 	TIMER_DECLARE(1);
 	TIMER_BEGIN(1);
-	char g1_ghash_file[128] = {0};
-	sprintf(g1_ghash_file, "%s/ghash_file", path1);
-	if (0 != access(g1_ghash_file, F_OK)) {
+	uint64_t g1_data_size = 0;
+	uint64_t g1_unique_chunk_count = 0;
+    char g1_ghash_file[128] = {0};
+    sprintf(g1_ghash_file, "%s/ghash_file", path1);
+    if (0 != access(g1_ghash_file, F_OK)) {
+		printf("g1 no hash table ,now construct it\n");
 		g1_unique_chunks = g_hash_table_new_full(g_int64_hash, g_fingerprint_equal, NULL, free_chunk);
 		for (i = 0; i < s1_count; i++) {
 			struct chunk *ruc;	
 			ruc = g_hash_table_lookup(g1_unique_chunks, &s1[i].fp);
 			if ( ruc ) {
-				continue;
 				ruc->ref_count++;
+				continue;
 			}
 			ruc = (struct chunk *)malloc(sizeof(struct chunk));
 			memset(ruc, 0, sizeof(struct chunk));
@@ -203,15 +255,22 @@ void intersection(const char *path1, const char *path2)
 			ruc->id = s1[i].cid;
 			ruc->ref_count = 1;
 			g_hash_table_insert(g1_unique_chunks, &ruc->fp, ruc);	
+			g1_data_size += ruc->size;
+			g1_unique_chunk_count++;
 		}
+		printf(FONT_COLOR_RED"g1 unique chunk total %lu\n"COLOR_NONE, g1_unique_chunk_count);
+		printf(FONT_COLOR_RED"g1 unique chunk total size %lu\n"COLOR_NONE, g1_data_size);
 	} else {
-		g1_unique_chunks = load_hash_table(g1_ghash_file);	
+		g1_unique_chunks = load_hash_table(g1_ghash_file);
 	}
-	printf("g1 have %lu unique chunks\n", g_hash_table_size(g1_unique_chunks));
+	printf("g1 hash table size: %lu\n", g_hash_table_size(g1_unique_chunks));
 
-	char g2_ghash_file[128] = {0};
-	sprintf(g2_ghash_file, "%s/ghash_file", path2);
-	if (0 != access(g2_ghash_file, F_OK)) {
+	uint64_t g2_data_size = 0;
+	uint64_t g2_unique_chunk_count = 0;
+    char g2_ghash_file[128] = {0};
+    sprintf(g2_ghash_file, "%s/ghash_file", path2);
+    if (0 != access(g2_ghash_file, F_OK)) {
+		printf("g1 no hash table ,now construct it\n");
 		read_recipe(recipe_path2, &s2, &s2_count, &file2, &file2_count, &empty2_count);
 		printf("g2 have %ld files and %ld fps\n", file2_count, s2_count);
 		g2_unique_chunks = g_hash_table_new_full(g_int64_hash, g_fingerprint_equal, NULL, free_chunk);
@@ -219,8 +278,8 @@ void intersection(const char *path1, const char *path2)
 			struct chunk *ruc;	
 			ruc = g_hash_table_lookup(g2_unique_chunks, &s2[i].fp);
 			if ( ruc ) {
-				continue;
 				ruc->ref_count++;
+				continue;
 			}
 			ruc = (struct chunk *)malloc(sizeof(struct chunk));
 			memset(ruc, 0, sizeof(struct chunk));
@@ -229,12 +288,16 @@ void intersection(const char *path1, const char *path2)
 			ruc->id = s2[i].cid;
 			ruc->ref_count = 1;
 			g_hash_table_insert(g2_unique_chunks, &ruc->fp, ruc);	
+			g2_data_size += ruc->size;
+			g2_unique_chunk_count++;
 		}
+		printf(FONT_COLOR_RED"g2 unique chunk total %lu\n"COLOR_NONE, g2_unique_chunk_count);
+		printf(FONT_COLOR_RED"g2 unique chunk total size %lu\n"COLOR_NONE, g2_data_size);
 		storage_hash_table(g2_unique_chunks, g2_ghash_file);
-	} else {
-		g2_unique_chunks = load_hash_table(g2_ghash_file);	
-	}
-	printf("g2 have %lu unique chunks\n", g_hash_table_size(g2_unique_chunks));
+    } else {
+        g2_unique_chunks = load_hash_table(g2_ghash_file);
+    }
+	printf("g2 hash table size: %lu\n", g_hash_table_size(g2_unique_chunks));
 	TIMER_END(1, time_1);
 	printf("construct hash table cost:%lf(s)\n", time_1);
 	
@@ -254,8 +317,31 @@ void intersection(const char *path1, const char *path2)
 	TIMER_END(2, time_2);
 	printf("find identified/migriated files cost:%lf(s)\n", time_2);
 
+	printf("simility 0.7:%ld 0.75:%ld 0.80:%ld 0.85:%ld 0.90:%ld 0.95:%ld\n", mig1_count[2], mig1_count[3], mig1_count[4], mig1_count[5], mig1_count[6], mig1_count[7]);
 
 	printf("%s total file count:%ld fingerprint count:%ld identified file count:%ld similar file count:%ld\n", g1_path, file1_count, s1_count, identified_file1_count, m1_count);
+
+	find_dedup_chunks(g1_unique_chunks, identified_file1, identified_file1_count, m1, m1_count);
+
+	printf("after delete i/m files, hash table size:%lu\n", g_hash_table_size(g1_unique_chunks));
+
+	/*
+	rewrited_files = g_hash_table_new_full(g_int64_hash, g_fid_equal, NULL, free_fid);
+	for (i = 0; i < identified_file1_count; i++) {
+		uint64_t *tfid = (uint64_t *)malloc(sizeof(uint64_t));
+		*tfid = identified_file1[i].fid;
+		if (NULL != g_hash_table_lookup(rewrited_files, tfid)) {
+			printf("rewrited files same!\n");
+			exit(-1);
+		}
+		g_hash_table_insert(rewrited_files, tfid, tfid);
+	}
+
+    char no_rewrite_files_path[256] = {0};
+    sprintf("%s/no_rewrite_list", g2_temp_path);
+	storage_hash_table(rewrited_files, no_rewrite_files_path);
+	g_hash_table_destroy(rewrited_files);
+	*/
 	
 	push_identified_files(identified_file1, identified_file1_count, write_identified_file_temp_queue);
 
@@ -345,14 +431,8 @@ void *write_migrated_file_temp_thread(void *arg) {
 		int32_t chunk_size;
 		for (i = 0; i < file->total_num; i++) {
 			if (file->arr[i + file->total_num] != 1) {
-				chunk_size = retrieve_from_container(pool_fp, file->fp_cids[i], &data, file->fps[i]);
-				if (chunk_size != file->arr[i]) {
-					printf ("file:%lu read chunk from container:%lu failed, chunk size:%d != %d\n", file->fid, file->fp_cids[i], chunk_size, file->arr[i]);
-					assert("retrieve migrated files chunk from containerpool failed\n");
-				}	
+				chunk_size = file->arr[i];
 				migrated_file_migrated_size += file->arr[i];
-				fwrite(data, chunk_size, 1, filep);
-				free(data);
 			}
 		}
 		free(file->fps);
@@ -428,12 +508,12 @@ void * write_identified_file_to_temp_thread(void *arg)
 		fseek(filep, 0,SEEK_SET);
 		fwrite(&identified_file_count, sizeof(uint64_t), 1, filep);
 		fclose(filep);
+		TIMER_END(1, time_1);
+		printf("write identified file to identified temp file cost:%lf(s)\n", time_1);
     }
     else {
 		printf("no identified files\n");
     }
-	TIMER_END(1, time_1);
-	printf("write identified file to identified temp file cost:%lf(s)\n", time_1);
     		
     return NULL;
 }
@@ -441,11 +521,9 @@ void * write_identified_file_to_temp_thread(void *arg)
 void *read_remained_files_data_thread(void *arg) {
 
     struct remained_file_info *one_file;
-    char pool_path[128];
     char new_meta_path[128];
     char new_record_path[128];
 
-	sprintf(pool_path, "%s/%s", g1_path, "container.pool");
 	sprintf(new_meta_path, "%s/%s", g1_path, "new.meta");
 	sprintf(new_record_path, "%s/%s", g1_path, "new.recipe");
 
@@ -462,7 +540,6 @@ void *read_remained_files_data_thread(void *arg) {
     char *recordbuf = malloc(recordbufsize);
     //recipe_offset = one_chunk_size;
 
-    GHashTable *recently_unique_chunks = g_hash_table_new_full(g_int64_hash, g_fingerprint_equal, NULL, free_chunk);
 
     uint64_t containerid = 0;
 
@@ -478,9 +555,11 @@ void *read_remained_files_data_thread(void *arg) {
 	double time_1 = 0;
 	TIMER_DECLARE(1);
 
+	uint64_t remained_unique_data_size = 0;
+	GHashTable *recently_unique_chunks = g_hash_table_new_full(g_int64_hash, g_fingerprint_equal, NULL, free_chunk);
+
     char *data = NULL;
 	while ((one_file = sync_queue_pop(remained_files_queue))) {
-		remained_files_size += one_file->filesize;
 		if (NULL == new_metadata_fp) {
 			TIMER_BEGIN(1);
     		new_metadata_fp = fopen(new_meta_path, "w+");
@@ -491,10 +570,6 @@ void *read_remained_files_data_thread(void *arg) {
     		if (NULL == new_record_fp) {
 				printf("fopen %s failed\n", new_record_path);
     		}
-    		old_pool_fp = fopen(pool_path, "r");
-    		if (NULL == old_pool_fp) {
-				printf("fopen %s failed\n", pool_path);
-   		 	}
 			memcpy(metabuf + metabufoff, &bv_num, sizeof(bv_num));
     		metabufoff += sizeof(bv_num);
     		memcpy(metabuf + metabufoff, &deleted, sizeof(deleted));
@@ -533,46 +608,28 @@ void *read_remained_files_data_thread(void *arg) {
 		recipe_offset += (one_file->chunknum) * one_chunk_size;
 	
 		number_of_chunks += one_file->chunknum;
-		int32_t chunk_size;
+		int32_t chunk_size ;
 		for (i = 0; i < one_file->chunknum; i++) {
-	    	struct chunk* ruc = g_hash_table_lookup(recently_unique_chunks, &one_file->fps[i]);
-	    	if (NULL == ruc) {
-				if (storage_buffer.container_buffer == NULL) {
-		    		storage_buffer.container_buffer = create_container();
-		    		storage_buffer.chunks = g_sequence_new(free_chunk);
-				}
-	
-				chunk_size = retrieve_from_container(old_pool_fp, one_file->fps_cid[i], &data, one_file->fps[i]);
-
-				if (container_overflow(storage_buffer.container_buffer, chunk_size))
-				{
-		    		write_container_async(storage_buffer.container_buffer);    
-		    		storage_buffer.container_buffer = create_container();
-		    		storage_buffer.chunks = g_sequence_new(free_chunk);
-				}
-
-				ruc = (struct chunk *)malloc(sizeof(struct chunk));
-				ruc->size = chunk_size;
-				ruc->id = container_count - 1; 
-				ruc->data = data;
+			chunk_size = one_file->fps_sizes[i];
+			struct chunk* ruc = g_hash_table_lookup(recently_unique_chunks, &(one_file->fps[i]));
+			if (NULL == ruc) {
+                ruc = (struct chunk *)malloc(sizeof(struct chunk));
+                ruc->size = chunk_size;
+                ruc->id = container_count - 1;
+                ruc->data = NULL;
+				ruc->ref_count = 1;
 				memcpy(&ruc->fp, &one_file->fps[i], sizeof(fingerprint));
-		
-				add_chunk_to_container(storage_buffer.container_buffer, ruc);
-
-				free(ruc->data);
-				ruc->data = NULL;
-				g_hash_table_insert(recently_unique_chunks, &one_file->fps[i], ruc);
+				g_hash_table_insert(recently_unique_chunks, &(ruc->fp), ruc);
+				remained_unique_data_size += chunk_size;
 			}
+			else 
+				ruc->ref_count++;
 	    
-			chunk_size = ruc->size;
-
 	    	if(recordbufoff + sizeof(fingerprint) + sizeof(containerid) + sizeof(chunk_size) > recordbufsize) {
 				fwrite(recordbuf, recordbufoff, 1, new_record_fp);
 				recordbufoff = 0;
-	    	}		
+	   		}		
 
-	    	struct fp_data * one_data = (struct fp_data *)malloc(sizeof(struct fp_data));			
-	    	one_data->data = data;	
 	    	memcpy(recordbuf + recordbufoff, one_file->fps[i], sizeof(fingerprint)); 
 	    	recordbufoff += sizeof(fingerprint);
 	    	memcpy(recordbuf + recordbufoff, &ruc->id, sizeof(containerid)); 
@@ -584,17 +641,17 @@ void *read_remained_files_data_thread(void *arg) {
 			free(one_file->fps);
 		if (NULL != one_file->fps_cid)
 			free(one_file->fps_cid);
+		if (NULL != one_file->fps_sizes)
+			free(one_file->fps_sizes);
 		free(one_file);
 		one_file = NULL;
 	}
 
-    printf("%s remained %lu files, total_size:%lu\n", g1_path, number_of_files, remained_files_size);
+    printf(FONT_COLOR_RED"%s remained %lu files\n"COLOR_NONE, g1_path, number_of_files);
+    printf(FONT_COLOR_RED"%s remained %lu unique data size\n"COLOR_NONE, g1_path, remained_unique_data_size);
     //display_hash_table(recently_unique_chunks);
-    //
     if (0 == number_of_files)
 		goto out;
-    write_container_async(storage_buffer.container_buffer);    
-    close_container_store();
 
     if( recordbufoff ) {
 		fwrite(recordbuf, recordbufoff, 1, new_record_fp);
@@ -611,7 +668,6 @@ void *read_remained_files_data_thread(void *arg) {
     fwrite(&number_of_files, sizeof(number_of_files), 1, new_metadata_fp);
     fwrite(&number_of_chunks, sizeof(number_of_chunks), 1, new_metadata_fp);
 
-    fclose(old_pool_fp);
     fclose(new_metadata_fp);
     fclose(new_record_fp);
 

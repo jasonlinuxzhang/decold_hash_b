@@ -56,6 +56,7 @@ struct remained_file_info
     uint64_t chunknum;
     fingerprint *fps;
     uint64_t *fps_cid;
+	int32_t *fps_sizes;	
 };
 
 

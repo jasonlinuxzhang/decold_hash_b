@@ -74,15 +74,12 @@ void restore_migrated_files(char *temp_migrated_file_path, GHashTable *recently_
 		return;
     }
 
-	char container_path[128] = {0};
-	sprintf(container_path, "%s/container.pool", target_path);
-	init_container_store(container_path, "r+");
 
     struct migrated_file_info *migrated_files = (struct migrated_file_info *)malloc(migrated_file_count * sizeof(struct migrated_file_info));
     migrated_file_info2 *migrated_files2 = (migrated_file_info2 *)malloc(migrated_file_count * sizeof(migrated_file_info2));
-	struct chunk* ruc;
 	char *data;
 	uint64_t i = 0;
+	uint64_t migrated_chunks_size = 0;
     i = 0;
     while(fread(migrated_files + i, sizeof(struct migrated_file_info), 1, filep)) {
 		struct migrated_file_info *p = migrated_files + i;
@@ -121,31 +118,24 @@ void restore_migrated_files(char *temp_migrated_file_path, GHashTable *recently_
 					show_fingerprint(p->fps[j]);
 					exit(-1);
 	    		}
-				
+				ck->ref_count++;	
 				t->fp_cids[j] = ck->id;
 				t->sizes[j] = ck->size;
 				
 			} else {
-				data = malloc(p->arr[j]);	
-				fread(data, p->arr[j], 1, filep);		
-				if (storage_buffer.container_buffer == NULL) {
-					storage_buffer.container_buffer = create_container();
-					storage_buffer.chunks = g_sequence_new(free_chunk);
+	    		struct chunk* ruc = g_hash_table_lookup(recently_unique_chunks, &p->fps[j]);
+				if (NULL == ruc) {
+		        	ruc = (struct chunk *)malloc(sizeof(struct chunk));
+	            	ruc->size = p->arr[j];
+      	      		ruc->id = container_count - 1;
+           			ruc->data = NULL;
+					ruc->ref_count = 1;
+					memcpy(&ruc->fp, &p->fps[j], sizeof(fingerprint));
+					g_hash_table_insert(recently_unique_chunks, &ruc->fp, ruc);
+					migrated_chunks_size += p->arr[j];
+				} else {
+					ruc->ref_count++;	
 				}
-				if (container_overflow(storage_buffer.container_buffer, p->arr[j])) {
-					write_container_async(storage_buffer.container_buffer);
-					storage_buffer.container_buffer = create_container();
-					storage_buffer.chunks = g_sequence_new(free_chunk);
-				}
-
-		        ruc = (struct chunk *)malloc(sizeof(struct chunk));
-	            ruc->size = p->arr[j];
-      	      	ruc->id = container_count - 1;
-           		ruc->data = data;
-				memcpy(&ruc->fp, &p->fps[j], sizeof(fingerprint));
-				add_chunk_to_container(storage_buffer.container_buffer, ruc);
-				g_hash_table_insert(recently_unique_chunks, &p->fps[j], ruc);
-				
 				t->fp_cids[j] = ruc->id;
 				t->sizes[j] = ruc->size;
 			}		
@@ -153,9 +143,11 @@ void restore_migrated_files(char *temp_migrated_file_path, GHashTable *recently_
 		sync_queue_push(write_migriated_file_to_destor_queue, t);
 		i++;
 	}
-	write_container_async(storage_buffer.container_buffer);
+	printf(FONT_COLOR_RED"migrated chunks size(unique):%lu\n"COLOR_NONE, migrated_chunks_size);
 
-	close_container_store();
+	char ghash_file[256] = {0};
+	sprintf(ghash_file, "%s/ghash_file", target_path);
+	storage_hash_table(recently_unique_chunks, ghash_file);
 
 }
 
@@ -185,8 +177,8 @@ void *restore_temp_thread(void *arg) {
     while (i < item_count) {
 		fingerprint *fp = malloc(sizeof(fingerprint));
 		struct chunk *ck = malloc(sizeof(struct chunk)); 
-		fread(fp, sizeof(fingerprint), 1, hash_filep );
 		fread(ck, sizeof(struct chunk), 1, hash_filep );
+		fread(fp, sizeof(fingerprint), 1, hash_filep );
 		g_hash_table_insert(recently_unique_chunks, fp, ck);
 		i++;
     }

@@ -99,8 +99,8 @@ void *restore_temp_thread(void *arg) {
     while (i < item_count) {
 		fingerprint *fp = malloc(sizeof(fingerprint));
 		struct chunk *ck = malloc(sizeof(struct chunk)); 
-		fread(fp, sizeof(fingerprint), 1, hash_filep );
 		fread(ck, sizeof(struct chunk), 1, hash_filep );
+		fread(fp, sizeof(fingerprint), 1, hash_filep );
 		g_hash_table_insert(recently_unique_chunks, fp, ck);
 		i++;
     }
@@ -145,6 +145,7 @@ no_ghash:
 				printf(BACKGROUND_COLOR_RED"can't find ck in recent hash\n"COLOR_NONE);
 				exit(-1);
 	    	}
+			ck->ref_count++;
 	    	identified_files[i].fp_cids[j] = ck->id;
 	    	identified_files[i].sizes[j] = ck->size;
 	
@@ -154,6 +155,7 @@ no_ghash:
 		sync_queue_push(write_identified_file_to_destor_queue, identified_files+i);
 		i++;
     }
+	storage_hash_table(recently_unique_chunks, g_hash_file);	
 
 out:
     if (NULL != filep)
@@ -220,28 +222,25 @@ void *write_identified_files_to_destor_thread(void *arg) {
             metabufoff = 0;
         }
 
-	recipe_offset += (one_file->num) * one_chunk_size;
-	number_of_chunks += one_file->num;
+		recipe_offset += (one_file->num) * one_chunk_size;
+		number_of_chunks += one_file->num;
 
-	for (i = 0; i < one_file->num; i++) {
-	    if(recordbufoff + sizeof(fingerprint) + sizeof(containerid) + sizeof(int32_t) > recordbufsize) {
-		fwrite(recordbuf, recordbufoff, 1, record_fp);
-		recordbufoff = 0;
-	    }		
+		for (i = 0; i < one_file->num; i++) {
+	    	if(recordbufoff + sizeof(fingerprint) + sizeof(containerid) + sizeof(int32_t) > recordbufsize) {
+				fwrite(recordbuf, recordbufoff, 1, record_fp);
+				recordbufoff = 0;
+	    	}		
 
-	    struct chunk *ck = one_file->fps[i];
-	    memcpy(recordbuf + recordbufoff, &one_file->fps[i], sizeof(fingerprint)); 
-	    recordbufoff += sizeof(fingerprint);
-	    memcpy(recordbuf + recordbufoff, &one_file->fp_cids[i], sizeof(containerid)); 
-	    recordbufoff += sizeof(containerid);
-	    memcpy(recordbuf + recordbufoff, &one_file->sizes[i], sizeof(one_file->sizes[i])); 
-	    recordbufoff += sizeof(one_file->sizes[i]);
+	    	struct chunk *ck = one_file->fps[i];
+	    	memcpy(recordbuf + recordbufoff, &one_file->fps[i], sizeof(fingerprint)); 
+	    	recordbufoff += sizeof(fingerprint);
+	    	memcpy(recordbuf + recordbufoff, &one_file->fp_cids[i], sizeof(containerid)); 
+	    	recordbufoff += sizeof(containerid);
+	    	memcpy(recordbuf + recordbufoff, &one_file->sizes[i], sizeof(one_file->sizes[i])); 
+	    	recordbufoff += sizeof(one_file->sizes[i]);
 
-	    //char code[41] = {0};
-	    //hash2code(one_file->fps[i], code);
-	    ///printf("write identfied files fp:%s cid:%lu size:%d to %ld\n", code, one_file->fp_cids[i], one_file->sizes[i], recipe_offset - (one_file->num) * one_chunk_size);
-	}
-	number_of_files++;	
+		}
+		number_of_files++;	
     }
 
     if (metabufoff) {
